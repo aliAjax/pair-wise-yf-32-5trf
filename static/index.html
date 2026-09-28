@@ -1,3 +1,185 @@
-<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>器官分配协调台</title>
-<style>body{font:15px system-ui;max-width:1080px;margin:40px auto;background:#f5f7fb;padding:0 20px;color:#172033}section{background:white;padding:20px;border-radius:12px;box-shadow:0 2px 12px #0001}pre{background:#0f172a;color:#86efac;padding:16px;overflow:auto;border-radius:8px}input,button{font:inherit;padding:8px;margin:4px}button{background:#be123c;color:white;border:0;border-radius:6px}</style>
-<h1>器官分配协调台</h1><p>查看当前可用器官、候选患者和分配进度。写操作通过 JSON API 完成，医院接口需携带 X-Hospital。</p><section><input id="u" value="allocator"><input id="r" value="allocation_officer"><button onclick="load()">刷新</button><pre id="o"></pre></section><script>async function load(){let r=await fetch('/api/state',{headers:{'X-User-Id':u.value,'X-Role':r.value}});o.textContent=JSON.stringify(await r.json(),null,2)}load()</script>
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>器官分配协调台</title>
+<style>
+:root{--line:#e4e8f0;--ink:#172033;--muted:#667085}
+*{box-sizing:border-box}
+body{font:14px/1.5 system-ui,"PingFang SC","Microsoft YaHei",sans-serif;max-width:1120px;margin:0 auto;background:#f5f7fb;padding:24px 20px 60px;color:var(--ink)}
+h1{margin:0 0 4px;font-size:22px}.sub{color:var(--muted);margin:0 0 18px}
+.bar{display:flex;gap:8px;align-items:center;background:#fff;padding:12px 16px;border-radius:10px;box-shadow:0 1px 6px #0001;margin-bottom:18px;flex-wrap:wrap}
+input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:7px;background:#fff}
+button{background:#be123c;color:#fff;border:0;cursor:pointer}
+button.ghost{background:#eef1f6;color:var(--ink)}
+h2{font-size:16px;margin:22px 0 10px}
+.card{background:#fff;border:1px solid var(--line);border-radius:10px;margin-bottom:10px;overflow:hidden}
+.donor-head{display:flex;align-items:center;gap:12px;padding:14px 16px;cursor:pointer;user-select:none;flex-wrap:wrap}
+.donor-head:hover{background:#fafbfe}
+.donor-head .caret{transition:transform .15s;color:var(--muted);width:14px}
+.card.open .caret{transform:rotate(90deg)}
+.donor-title{font-weight:600;font-size:15px}
+.donor-meta{color:var(--muted);font-size:13px}
+.spacer{flex:1}
+.badge{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:600}
+.b-available{background:#e0f2fe;color:#075985}
+.b-allocated{background:#fef3c7;color:#92400e}
+.b-used{background:#dcfce7;color:#166534}
+.b-expired{background:#e5e7eb;color:#6b7280}
+.b-proposed{background:#ede9fe;color:#5b21b6}
+.b-accepted{background:#dbeafe;color:#1e40af}
+.b-in_transit{background:#ffedd5;color:#9a3412}
+.b-handed_off{background:#cffafe;color:#155e75}
+.b-implanted{background:#dcfce7;color:#166534}
+.b-withdrawn{background:#fee2e2;color:#991b1b}
+.body{display:none;padding:4px 16px 16px;border-top:1px solid var(--line)}
+.card.open .body{display:block}
+.organ{border:1px solid var(--line);border-radius:9px;padding:12px 14px;margin-top:12px;background:#fcfdff}
+.organ-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.organ-name{font-weight:600}
+.organ-meta{color:var(--muted);font-size:12.5px}
+.steps{display:flex;align-items:center;gap:0;margin:14px 0 10px;flex-wrap:wrap}
+.step{display:flex;flex-direction:column;align-items:center;gap:4px;position:relative;min-width:86px}
+.dot{width:26px;height:26px;border-radius:50%;background:#e8ecf3;color:#8a93a6;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;z-index:1}
+.step.done .dot{background:#16a34a;color:#fff}
+.step.current .dot{background:#be123c;color:#fff;box-shadow:0 0 0 4px #fecdd3}
+.step-label{font-size:11.5px;color:var(--muted);text-align:center}
+.step.done .step-label,.step.current .step-label{color:var(--ink);font-weight:600}
+.connector{flex:1;min-width:22px;height:2px;background:#e8ecf3;margin:0 4px;margin-bottom:18px}
+.connector.done{background:#16a34a}
+.blocked{margin-top:8px;border-left:3px solid #be123c;background:#fff1f2;border-radius:0 7px 7px 0;padding:8px 12px;font-size:13px}
+.blocked.ok{border-color:#16a34a;background:#f0fdf4}
+.blocked.gray{border-color:#9ca3af;background:#f3f4f6;color:var(--muted)}
+.blocked b{display:block;margin-bottom:2px}
+.tag{font-size:11.5px;background:#f1f4f9;border-radius:5px;padding:1px 7px;color:var(--muted)}
+table{width:100%;border-collapse:collapse;background:#fff;border-radius:10px;overflow:hidden;font-size:13px}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+th{background:#f8fafc;color:#475467;font-weight:600;font-size:12.5px}
+.muted{color:var(--muted)}
+.pill-row{display:flex;gap:6px;flex-wrap:wrap}
+</style>
+<h1>器官分配协调台</h1>
+<p class="sub">同一捐献者的每个器官各自流转；展开捐献者可查看每个器官的进度步骤与当前受阻位置。写操作通过 JSON API 完成。</p>
+<div class="bar">
+  <label>用户 <input id="u" value="allocator" size="10"></label>
+  <label>角色
+    <select id="r">
+      <option value="allocation_officer" selected>分配员</option>
+      <option value="hospital">医院</option>
+      <option value="coordinator">协调员</option>
+      <option value="auditor">审计员</option>
+      <option value="viewer">访客</option>
+    </select>
+  </label>
+  <label class="hospital-only" style="display:none">医院 <input id="h" value="H1" size="6"></label>
+  <button onclick="load()">刷新</button>
+  <span class="spacer"></span>
+  <span id="clock" class="muted"></span>
+</div>
+
+<h2>捐献者与各器官进度</h2>
+<div id="donors"></div>
+
+<h2>候选患者</h2>
+<div id="candidates-wrap"></div>
+
+<h2>分配记录</h2>
+<div id="allocations-wrap"></div>
+
+<script>
+const STEP_LABELS={proposed:'提出',accepted:'接受',in_transit:'转运',handed_off:'交接',implanted:'植入'};
+const ROLE_LABELS={allocation_officer:'分配员',hospital:'医院',coordinator:'协调员',auditor:'审计员',viewer:'访客'};
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const STATUS_CN={available:'待分配',allocated:'流转中',used:'已用完',expired:'已失效',proposed:'已提出',accepted:'已接受',
+  in_transit:'转运中',handed_off:'已交接',implanted:'已植入',withdrawn:'已撤回'};
+const badge=s=>`<span class="badge b-${esc(s)}">${STATUS_CN[s]||esc(s)}</span>`;
+
+function headers(){const o={'X-User-Id':u.value,'X-Role':r.value};if(r.value==='hospital')o['X-Hospital']=h.value;return o;}
+async function api(path){const res=await fetch(path,{headers:headers()});return {ok:res.ok,data:await res.json()};}
+
+async function load(){
+  document.querySelectorAll('.hospital-only').forEach(e=>e.style.display=r.value==='hospital'?'':'none');
+  const {data}=await api('/api/state');
+  clock.textContent='服务器时间 '+(data.server_time||'');
+  if(data.error){donors.innerHTML=`<div class="card"><div class="donor-head">${esc(data.message)}</div></div>`;return;}
+  donors.innerHTML=(data.donors||[]).map(donorCard).join('')||'<p class="muted">（当前角色/机构暂无可查看的捐献者）</p>';
+  renderTable('candidates-wrap',data.candidates,['id','patient_name','blood_type','organ','hospital','region','urgency','wait_days','status'],
+    c=>`<td>${c.id}</td><td>${esc(c.patient_name)}</td><td>${c.blood_type}</td><td>${esc(c.organ)}</td><td>${esc(c.hospital)}</td><td>${esc(c.region)}</td><td>${c.urgency}</td><td>${c.wait_days}</td><td>${esc(c.status)}</td>`);
+  renderTable('allocations-wrap',data.allocations,['id','organ_id','status','updated_at'],
+    a=>{const cells=[`<td>${a.id}</td>`];
+        cells.push(a.organ_id?`<td>#${a.organ_id}</td>`:'<td class="muted">—</td>');
+        cells.push(`<td>${badge(a.status)}</td><td class="muted">${esc(a.updated_at||'')}</td>`);
+        return cells.join('');});
+}
+
+function donorCard(d){
+  const sum=(d.organ_summary?Object.entries(d.organ_summary).map(([k,v])=>`${STATUS_CN[k]||k} ${v}`):[]).join(' · ');
+  return `<div class="card" data-id="${d.id}">
+    <div class="donor-head" onclick="this.parentNode.classList.toggle('open')">
+      <span class="caret">▶</span>
+      <span class="donor-title">捐献者 #${d.id}</span>
+      <span class="donor-meta">${d.blood_type} 型 · ${esc(d.hospital)} · ${esc(d.region)} · ${d.organ_count} 个器官</span>
+      <span class="spacer"></span>
+      <span class="pill-row">${badge(d.status)}</span>
+    </div>
+    <div class="body">
+      <p class="donor-meta" style="margin:10px 0 0">器官汇总：${esc(sum)||'—'}</p>
+      ${d.organs.map(organBlock).join('')}
+    </div>
+  </div>`;
+}
+
+function stepIndexFor(o){
+  const s=o.allocation_status;
+  if(s==='proposed')return 0;if(s==='accepted')return 1;
+  if(s==='in_transit')return 2;if(s==='handed_off')return 3;if(s==='implanted')return 4;
+  return -1;
+}
+
+function organBlock(o){
+  const cur=stepIndexFor(o);
+  let steps='';
+  ['proposed','accepted','in_transit','handed_off','implanted'].forEach((s,i)=>{
+    const cls=o.effective_status==='expired'?'':(i<cur?'done':i===cur?'current':'');
+    steps+=`<div class="step ${cls}"><div class="dot">${i<cur?'✓':i+1}</div><div class="step-label">${STEP_LABELS[s]}</div></div>`;
+    if(i<4)steps+=`<div class="connector ${i<cur?'done':''}"></div>`;
+  });
+  let blocked;
+  if(o.stage==='done') blocked='<div class="blocked ok"><b>✓ 该器官流程已完成</b>已完成植入，无需继续处置。</div>';
+  else if(o.stage==='expired') blocked=`<div class="blocked gray"><b>⊘ ${esc(o.stage_label)}</b>${esc(o.blocked_reason)}</div>`;
+  else blocked=`<div class="blocked"><b>当前受阻：${esc(o.stage_label)}</b>${esc(o.blocked_reason)}${o.waiting_for?` · 等待角色：<span class="tag">${esc(ROLE_LABELS[o.waiting_for]||o.waiting_for)}</span>`:''}</div>`;
+  const cand=o.candidate?`候选患者：${esc(o.candidate.patient_name)}（${esc(o.candidate.hospital)}，${o.candidate.blood_type} 型，紧急度 ${o.candidate.urgency}）`:'';
+  const alloc=o.allocation_id?`分配 #${o.allocation_id} ${badge(o.allocation_status)}`:'';
+  const ho=o.handoff?`交接：${esc(o.handoff.from_hospital)} → ${esc(o.handoff.to_hospital)}（${o.handoff.status==='accepted'?'已确认':'已发起待确认'}）`:'';
+  const temp=o.cold_chain_temp!=null?`冷链 ${o.cold_chain_temp}°C`:'';
+  const delay=o.delayed_minutes?`延误 ${o.delayed_minutes} 分钟`:'';
+  return `<div class="organ">
+    <div class="organ-top">
+      <span class="organ-name">${esc(o.organ)}</span>
+      <span class="organ-id tag">#${o.id}</span>
+      ${badge(o.effective_status)}
+      <span class="organ-meta">可用至 ${esc(o.expires_at)}</span>
+      <span class="spacer"></span>
+      ${alloc}
+    </div>
+    <div class="steps">${steps}</div>
+    <div class="organ-meta">${[cand,ho,temp,delay].filter(Boolean).join(' ｜ ')||'尚无分配记录'}</div>
+    ${blocked}
+  </div>`;
+}
+
+function renderTable(wrapId,rows,_cols,rowHtml){
+  const el=document.getElementById(wrapId);
+  if(!rows){el.innerHTML='<p class="muted">当前角色不可见。</p>';return;}
+  if(!rows.length){el.innerHTML='<p class="muted">暂无数据。</p>';return;}
+  const heads={id:'ID',patient_name:'患者',blood_type:'血型',organ:'器官',hospital:'医院',region:'区域',
+    urgency:'紧急度',wait_days:'等待天数',status:'状态',organ_id:'器官',updated_at:'更新时间'};
+  const cols=_cols.filter(c=>rows.some(r=>r[c]!==undefined));
+  el.innerHTML=`<table><thead><tr>${cols.map(c=>`<th>${heads[c]||c}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map(r=>`<tr>${rowHtml(r)}</tr>`).join('')}</tbody></table>`;
+}
+
+r.addEventListener('change',load);
+load();
+</script>
+</html>
