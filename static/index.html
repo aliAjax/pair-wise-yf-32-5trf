@@ -1,3 +1,99 @@
 <!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>器官分配协调台</title>
-<style>body{font:15px system-ui;max-width:1080px;margin:40px auto;background:#f5f7fb;padding:0 20px;color:#172033}section{background:white;padding:20px;border-radius:12px;box-shadow:0 2px 12px #0001}pre{background:#0f172a;color:#86efac;padding:16px;overflow:auto;border-radius:8px}input,button{font:inherit;padding:8px;margin:4px}button{background:#be123c;color:white;border:0;border-radius:6px}</style>
-<h1>器官分配协调台</h1><p>查看当前可用器官、候选患者和分配进度。写操作通过 JSON API 完成，医院接口需携带 X-Hospital。</p><section><input id="u" value="allocator"><input id="r" value="allocation_officer"><button onclick="load()">刷新</button><pre id="o"></pre></section><script>async function load(){let r=await fetch('/api/state',{headers:{'X-User-Id':u.value,'X-Role':r.value}});o.textContent=JSON.stringify(await r.json(),null,2)}load()</script>
+<style>
+body{font:15px system-ui;max-width:1080px;margin:32px auto;background:#f5f7fb;padding:0 20px;color:#172033}
+h1{margin-bottom:4px}.sub{color:#5b6577;margin-top:0}
+.bar{background:white;padding:14px 18px;border-radius:12px;box-shadow:0 2px 12px #0001;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+input{font:inherit;padding:8px;border:1px solid #cbd2e0;border-radius:6px}
+button{font:inherit;padding:8px 14px;background:#be123c;color:white;border:0;border-radius:6px;cursor:pointer}
+button.ghost{background:#475569}
+.donor{background:white;border-radius:12px;box-shadow:0 2px 12px #0001;margin:14px 0;overflow:hidden}
+.donor>summary{list-style:none;cursor:pointer;padding:16px 18px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.donor>summary::-webkit-details-marker{display:none}
+.donor>summary .caret{transition:transform .15s;color:#94a3b8}.donor[open] .caret{transform:rotate(90deg)}
+.badge{padding:2px 10px;border-radius:999px;font-size:12px;font-weight:600}
+.b-available{background:#dcfce7;color:#166534}.b-allocating{background:#fef9c3;color:#854d0e}
+.b-used{background:#e2e8f0;color:#334155}.b-allocated{background:#dbeafe;color:#1e40af}
+.b-implanted{background:#dcfce7;color:#166534}.b-withdrawn{background:#fee2e2;color:#991b1b}.b-expired{background:#e2e8f0;color:#64748b}
+.organs{padding:0 18px 16px 34px;display:flex;flex-direction:column;gap:12px}
+details.organ{border:1px solid #e2e8f0;border-radius:10px}
+details.organ>summary{list-style:none;cursor:pointer;padding:12px 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+details.organ>summary::-webkit-details-marker{display:none}
+.organ-body{padding:4px 16px 14px}
+.steps{display:flex;gap:0;align-items:center;margin:10px 0 6px;flex-wrap:wrap}
+.step{font-size:13px;padding:4px 10px;border-radius:6px;background:#f1f5f9;color:#94a3b8;position:relative}
+.step.done{background:#bbf7d0;color:#166534}.step.current{background:#fde68a;color:#78350f;font-weight:700}
+.step.failed{background:#fecaca;color:#991b1b;text-decoration:line-through}
+.arrow{color:#cbd5e1;margin:0 2px}
+.blocked{margin:6px 0;font-size:13px;color:#b45309}.blocked.idle{color:#475569}
+.meta{font-size:13px;color:#475569;display:flex;gap:14px;flex-wrap:wrap;margin-top:6px}
+.kv{font-size:13px;color:#475569;margin-top:8px}.kv b{color:#172033}
+.muted{color:#94a3b8}.empty{background:white;border-radius:12px;padding:24px;text-align:center;color:#64748b;box-shadow:0 2px 12px #0001}
+h2{font-size:18px;margin:24px 0 8px}
+</style>
+<h1>器官分配协调台</h1>
+<p class="sub">展开捐献者可查看每个器官各自的接受、转运、交接、植入进度与当前受阻位置。写操作通过 JSON API 完成，医院接口需携带 X-Hospital。</p>
+<div class="bar">
+  用户 <input id="u" value="allocator" size="10">
+  角色 <input id="r" value="allocation_officer" size="18">
+  医院 <input id="h" value="" size="8" placeholder="X-Hospital">
+  <button onclick="load()">刷新</button>
+  <button class="ghost" onclick="toggleAll(true)">全部展开</button>
+  <button class="ghost" onclick="toggleAll(false)">全部收起</button>
+  <span id="t" class="muted"></span>
+</div>
+<div id="root"></div>
+<script>
+const ORGAN_CN = {kidney:"肾脏", liver:"肝脏", heart:"心脏", lung:"肺脏", pancreas:"胰腺", intestine:"肠", cornea:"角膜"};
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const organName = o => (ORGAN_CN[o] || o) + "（" + o + "）";
+const badge = s => `<span class="badge b-${s}">${({available:"待分配",allocating:"推进中",used:"已用完",allocated:"已分配",implanted:"已植入",withdrawn:"已撤回",expired:"已过期"}[s] || s)}</span>`;
+function steps(progress){
+  return `<div class="steps">` + progress.steps.map((st,i) =>
+    (i ? `<span class="arrow">→</span>` : "") + `<span class="step ${st.state}">${st.step}</span>`).join("") + `</div>`;
+}
+function organBlock(o){
+  const a = o.allocation, p = o.progress;
+  const blockedClass = p.blocked && o.effective_status === "available" ? "blocked idle" : "blocked";
+  let html = `<details class="organ">
+    <summary><span>▸</span><b>${organName(o.organ)}</b>${badge(o.effective_status)}
+      <span class="muted">#${o.id}</span>
+      <span class="muted">剩余 ${Math.floor(o.remaining_minutes/60)}h${o.remaining_minutes%60}m</span>
+      ${a && a.delayed_minutes ? `<span class="badge b-withdrawn">延误 ${a.delayed_minutes} 分钟</span>` : ""}
+    </summary>
+    <div class="organ-body">
+      ${steps(p)}
+      ${p.blocked ? `<div class="${blockedClass}">📍 当前受阻：${esc(p.blocked)}</div>` : `<div class="blocked idle">✓ 该器官流程已结束</div>`}
+      <div class="meta"><span>窗口 ${esc(o.available_at)} ~ ${esc(o.expires_at)}</span><span>修订版本 r${o.revision}</span></div>`;
+  if(a){
+    html += `<div class="kv"><b>当前分配</b> #${a.id} · 状态 ${esc(a.status)} · 患者 ${esc(a.patient_name)} · 接收医院 ${esc(a.candidate_hospital)} · 评分 ${a.score}</div>`;
+    if(a.handoff){ html += `<div class="kv"><b>交接</b> ${esc(a.handoff.from_hospital)} → ${esc(a.handoff.to_hospital)} · ${a.handoff.status==="accepted"?"接收医院已确认":"等待接收医院确认"} · 冷链 ${a.handoff.cold_chain_temp}°C</div>`; }
+    if(a.cold_chain_temp != null){ html += `<div class="kv"><b>冷链温度</b> ${a.cold_chain_temp}°C</div>`; }
+  } else {
+    html += `<div class="kv muted">尚未提出分配</div>`;
+  }
+  html += `</div></details>`;
+  return html;
+}
+function donorBlock(d){
+  const organBits = d.organs.map(o => `${organName(o.organ)} ${badge(o.effective_status)}`).join(" ");
+  return `<details class="donor">
+    <summary><span class="caret">▶</span><b>捐献者 #${d.id}</b>${badge(d.status)}
+      <span class="muted">${d.blood_type} 型 · ${esc(d.hospital)} · ${esc(d.region)} · ${d.organ_count} 个器官</span>
+    </summary>
+    <div class="organs">
+      <div class="meta">${organBits}</div>
+      ${d.organs.map(organBlock).join("")}
+    </div>
+  </details>`;
+}
+async function load(){
+  const headers = {"X-User-Id":u.value,"X-Role":r.value}; if(h.value) headers["X-Hospital"]=h.value;
+  const res = await fetch("/api/state",{headers}); const data = await res.json();
+  t.textContent = data.server_time ? "服务器时间 " + data.server_time : "";
+  if(res.status !== 200){ root.innerHTML = `<div class="empty">${esc(data.message||res.status)}</div>`; return; }
+  if(!data.donors || !data.donors.length){ root.innerHTML = `<div class="empty">当前角色看不到捐献者（viewer 仅可见已植入记录，医院需填写 X-Hospital）。</div>`; return; }
+  root.innerHTML = data.donors.map(donorBlock).join("");
+}
+function toggleAll(open){ document.querySelectorAll("details.donor,details.organ").forEach(el => el.open = open); }
+load();
+</script>
